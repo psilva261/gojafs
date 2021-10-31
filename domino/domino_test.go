@@ -244,6 +244,46 @@ func TestXMLHttpRequest(t *testing.T) {
 	d.Stop()
 }
 
+func TestFetch(t *testing.T) {
+	d := NewDomino(simpleHTML, xhr, nil)
+	d.Start()
+	script := `
+		var oHeaders = new Headers();
+		var oReq = new Request('http://www.example.org/example.txt', {
+			method: 'GET',
+			headers: oHeaders
+		});
+		var loaded = false;
+		/*oReq.addEventListener("load", function() {
+			loaded = true;
+		});
+		oReq.open("GET", "http://www.example.org/example.txt");
+		oReq.send();*/
+		fetch(oReq)
+		  .then(resp => {
+		  	console.log('first then');
+		  	return 123;
+		  })
+		  .then(magic => {
+		  	loaded = (magic == 123);
+		  });
+	`
+	_, err := d.Exec(script, true)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	<-time.After(time.Second)
+	res, err := d.Exec("loaded;", false)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	t.Logf("res=%v", res)
+	if !strings.Contains(res, "true") {
+		t.Fatal()
+	}
+	d.Stop()
+}
+
 func TestJQueryAjax(t *testing.T) {
 	buf, err := ioutil.ReadFile("jquery-3.5.1.js")
 	if err != nil {
@@ -690,4 +730,65 @@ func TestMutationEventsAddScript(t *testing.T) {
 	if n != 2 || !foundIns || !foundAtr {
 		t.Fail()
 	}
+}
+
+func TestBtoa(t *testing.T) {
+	d := NewDomino(simpleHTML, nil, nil)
+	d.Start()
+	res, err := d.Exec("btoa('a')", true)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	if res != "YQ==" {
+		t.Fatalf("%x", res)
+	}
+	d.Stop()
+}
+
+func TestList(t *testing.T) {
+	d := NewDomino(simpleHTML, nil, nil)
+	d.Start()
+	_, err := d.Exec("true", true)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	l := d.List("/0")
+	t.Logf("%v", l)
+	foundH1 := false
+	for _, t := range l {
+		if t == "0" {
+			foundH1 = true
+		}
+	}
+	if !foundH1 {
+		t.Fail()
+	}
+	res := d.Retrieve("/0/_tagName")
+	if res != "BODY" {
+		t.Fatalf("%v", res)
+	}
+	l = d.List("/0/0")
+	res = d.Retrieve("/0/0/_tagName")
+	if res != "H1" {
+		t.Fatalf("%v", res)
+	}
+	t.Logf("%v", l)
+	d.Stop()
+}
+
+func TestWrite(t *testing.T) {
+	d := NewDomino(simpleHTML, nil, nil)
+	d.Start()
+	_, err := d.Exec("true", true)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	if err = d.Write("/0/0/innerHTML", "Hello2"); err != nil {
+		t.Fatalf("%v", err)
+	}
+	res := d.Retrieve("/0/0/outerHTML")
+	if res != `<h1 id="title">Hello2</h1>` {
+		t.Fatalf("%v", res)
+	}
+	d.Stop()
 }

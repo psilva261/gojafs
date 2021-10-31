@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"github.com/knusbaum/go9p/fs"
 	"github.com/psilva261/gojafs"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/user"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -83,7 +85,7 @@ func ctl(conn net.Conn) {
 		d.Start()
 		initialized := false
 		for _, s := range js {
-			if _, err := d.Exec(s, !initialized); err != nil {
+			if _, err := d.Exec56(s, !initialized); err != nil {
 				if strings.Contains(err.Error(), "halt at") {
 					log.Printf("execution halted: %v", err)
 					return
@@ -133,9 +135,17 @@ func ctl(conn net.Conn) {
 	}
 }
 
+var reFirstCap = regexp.MustCompile("(.)([A-Z][a-z]+)")
+var reAllCap   = regexp.MustCompile("([a-z0-9])([A-Z])")
+
+func kebab(s string) string {
+    k := reFirstCap.ReplaceAllString(s, "${1}-${2}")
+    k = reAllCap.ReplaceAllString(k, "${1}-${2}")
+    return strings.ToLower(k)
+}
+
 func query(sel, prop string) (val string, err error) {
-	log.Printf("gojajs: query: sel=%+v, prop=%+v\n", sel, prop)
-	fn := sel+"/style/"+prop
+	fn := sel+"/style/"+kebab(prop)
 	rwc, err := open(fn)
 	if err != nil {
 		return "", fmt.Errorf("open %v: %v", fn, err)
@@ -155,9 +165,17 @@ func xhr(req *http.Request) (resp *http.Response, err error) {
 	if err := req.Write(rwc); err != nil {
 		return nil, fmt.Errorf("write: %v", err)
 	}
-	r := bufio.NewReader(rwc)
+	buf := bytes.NewBufferString("")
+	if n, err := io.Copy(buf, rwc); err != nil {
+		if n == 0 {
+			return nil, fmt.Errorf("io copy %v: %v", n, err)
+		} else {
+			log.Printf("io copy (read %v): %v", n, err)
+		}
+	}
+	r := bufio.NewReader(bytes.NewBufferString(buf.String()))
 	if resp, err = http.ReadResponse(r, req); err != nil {
-		return nil, fmt.Errorf("read: %v", err)
+		return nil, fmt.Errorf("read resp: %v", err)
 	}
 	return
 }

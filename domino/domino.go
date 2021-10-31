@@ -3,6 +3,7 @@ package domino
 import (
 	"bytes"
 	"embed"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"github.com/dop251/goja"
@@ -23,7 +24,11 @@ import (
 	"time"
 )
 
-var timeout = 60 * time.Second
+var (
+	convert6to5 = os.Getenv("GOJAFS_6TO5")
+	origin = "https://example.com"
+	timeout = 60 * time.Second
+)
 
 //go:embed domino-lib/*js
 var lib embed.FS
@@ -31,7 +36,11 @@ var lib embed.FS
 //go:embed domintf.js
 var domIntfJs embed.FS
 
+//go:embed regen-runtime.js
+var regenRtJs embed.FS
+
 var domIntf string
+var regenRt string
 
 func init() {
 	data, err := domIntfJs.ReadFile("domintf.js")
@@ -39,6 +48,11 @@ func init() {
 		panic(err.Error())
 	}
 	domIntf = string(data)
+	data, err = regenRtJs.ReadFile("regen-runtime.js")
+	if err != nil {
+		panic(err.Error())
+	}
+	regenRt = string(data)
 }
 
 type MutationType int
@@ -181,7 +195,7 @@ func (d *Domino) Exec(script string, initial bool) (res string, err error) {
 	rr := regexp.MustCompile(`-->\s*$`)
 	script = r.ReplaceAllString(script, "//")
 	script = rr.ReplaceAllString(script, "//")
-	SCRIPT := domIntf + script
+	SCRIPT := domIntf + regenRt + script
 	if !initial {
 		SCRIPT = script
 	}
@@ -210,27 +224,30 @@ func (d *Domino) Exec(script string, initial bool) (res string, err error) {
 				type S struct {
 					Buf      string                                                                `json:"buf"`
 					HTML     string                                                                `json:"html"`
+					Origin   string                                                                `json:"origin"`
 					Referrer func() string                                                         `json:"referrer"`
 					Style    func(string, string, string, string) string                           `json:"style"`
 					XHR      func(string, string, map[string]string, string, func(string, string)) `json:"xhr"`
 					Mutated  func(t int, target string, tag string, node map[string]string)        `json:"mutated"`
+					Btoa     func([]byte) string                                                   `json:"btoa"`
 				}
 
 				vm.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
 				vm.Set("opossum", S{
 					HTML:     d.html,
-					Buf:      "yolo",
-					Referrer: func() string { return "https://example.com" },
+					Origin:   origin,
+					Referrer: func() string { return origin },
 					Style: func(sel, pseudo, prop, prop2 string) string {
 						v, err := d.query(sel, prop)
 						if err != nil {
-							log.Printf("devjs: domino: query %v: %v", sel, err)
+							log.Printf("gojajs: domino: query %v: %v", sel, err)
 							return ""
 						}
 						return v
 					},
 					XHR:     d.xhr,
 					Mutated: d.mutated,
+					Btoa:    Btoa,
 				})
 			}
 
@@ -276,6 +293,18 @@ cleanup:
 	close(intCh)
 
 	return
+}
+
+func Btoa(bs []byte) string {
+	return base64.StdEncoding.EncodeToString(bs)
+}
+
+func (d *Domino) Exec56(script string, initial bool) (res string, err error) {
+	if convert6to5 != "" {
+		return d.Exec6(script, initial)
+	} else {
+		return d.Exec(script, initial)
+	}
 }
 
 func (d *Domino) Exec6(script string, initial bool) (res string, err error) {
@@ -364,8 +393,35 @@ outer:
 		// TODO: either add other change types like ajax begin/end or
 		// just have one channel for all events worth waiting for.
 		select {
-		case <-d.domChange:
+		case m := <-d.domChange:
 			changed = true
+			if strings.ToLower(m.Tag) == "script" {
+				s := ""
+				src, ok := m.Node["src"]
+				if ok {
+					ch := make(chan string)
+					log.Printf("<script> GET %v", src)
+					d.xhr("GET", src, make(map[string]string), "", func(data, err string) {
+						if err != "" {
+							log.Printf("xhr %v: %v", src, err)
+							log.Printf("data: %v", data)
+						}
+						ch <- data
+					})
+					s = <-ch
+				} else if inner, ok := m.Node["innerHTML"]; ok {
+					s = inner
+				}
+				if strings.TrimSpace(s) != "" {
+					sp := s
+					if len(sp) > 20 {
+						sp = sp[:20] + "..."
+					}
+					if _, err := d.Exec56(s, false); err != nil {
+						log.Printf("exec %v: %v", src, err)
+					}
+				}
+			}
 		case <-time.After(time.Second):
 			break outer
 		}
@@ -382,8 +438,14 @@ outer:
 }
 
 func (d *Domino) xhr(method, uri string, h map[string]string, data string, cb func(data string, err string)) {
+	uri = strings.TrimPrefix(uri, ".")
+	if !strings.HasPrefix(uri, "http") && !strings.HasPrefix(uri, "/") {
+		// TODO: use instead origin/url prefix
+		uri = "/"+uri
+	}
 	req, err := http.NewRequest(method /*u.String()*/, uri, strings.NewReader(data))
 	if err != nil {
+		err = fmt.Errorf("new http req: %v", err)
 		cb("", err.Error())
 		return
 	}
@@ -393,12 +455,14 @@ func (d *Domino) xhr(method, uri string, h map[string]string, data string, cb fu
 	go func() {
 		resp, err := d.xhrq(req)
 		if err != nil {
+			err = fmt.Errorf("xhrq: %v", err)
 			cb("", err.Error())
 			return
 		}
 		//defer resp.Body.Close()
 		bs, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
+			err = fmt.Errorf("read all: %v", err)
 			cb("", err.Error())
 			return
 		}
@@ -428,6 +492,98 @@ func (d *Domino) mutated(t int, q string, tag string, n map[string]string) {
 	default:
 		log.Printf("dom changes backlog full")
 	}
+}
+
+func (d *Domino) docPath(path string) (dp string, err error) {
+	if !strings.HasPrefix(path, "/0") {
+		return "", fmt.Errorf("malformed path %v", path)
+	}
+	path = strings.TrimPrefix(path, "/0")
+	q := "document.getElementsByTagName('body')[0]"
+	for _, el := range strings.Split(path, "/") {
+		if el == "" {
+			continue
+		}
+		i, err := strconv.Atoi(el)
+		if err == nil {
+			q += fmt.Sprintf(".children[%d]", i)
+		} else {
+			q += fmt.Sprintf(".%v", el)
+		}
+	}
+	return q, nil
+}
+
+func (d *Domino) Retrieve(path string) string {
+	tmp := strings.Split(path, "/")
+	path = strings.Join(tmp[:len(tmp)-1], "/")
+	k := tmp[len(tmp)-1]
+	if !strings.HasPrefix(path, "/0") {
+		log.Printf("malformed path %v", path)
+		return ""
+	}
+	dp, err := d.docPath(path)
+	if err != nil {
+		log.Printf("doc path %v: %v", path, err)
+		return ""
+	}
+	res, err := d.Exec(dp+"."+k, false)
+	if err != nil {
+		log.Printf("exec %v: %v", dp+"."+k, err)
+		return ""
+	}
+	return res
+}
+
+func (d *Domino) Write(path, val string) (err error) {
+	tmp := strings.Split(path, "/")
+	path = strings.Join(tmp[:len(tmp)-1], "/")
+	k := tmp[len(tmp)-1]
+	if !strings.HasPrefix(path, "/0") {
+		return fmt.Errorf("malformed path %v", path)
+	}
+	dp, err := d.docPath(path)
+	if err != nil {
+		return fmt.Errorf("doc path %v: %v", path, err)
+	}
+	_, err = d.Exec(dp+`.`+k+` = '`+val+`'`, false)
+	return
+}
+
+func (d *Domino) List(path string) (l []string) {
+	l = make([]string, 0, 10)
+	dp, err := d.docPath(path)
+	if err != nil {
+		log.Printf("doc path %v: %v", path, err)
+		return
+	}
+	q := `
+	(function() {
+		let items = [];
+		let q = ` + dp + `;
+		let ks = getProperties(q);
+		let ms = getMethods(q);
+		let i;
+		if (q.children) {
+			for (i = 0; i < q.children.length; i++) {
+				items.push(i);
+			}
+		}
+		for (i = 0; i < ks.length; i++) {
+			items.push(ks[i]);
+		}
+		for (i = 0; i < ms.length; i++) {
+			items.push(ms[i] + '()');
+		}
+		return items;
+	})()
+	`
+	res, err := d.Exec(q, false)
+	if err != nil {
+		log.Printf("exec %v: %v", q, err)
+		return
+	}
+	return strings.Split(res, ",")
 }
 
 // AJAX:

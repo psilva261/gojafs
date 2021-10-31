@@ -38,7 +38,8 @@ exports.InvalidNodeTypeError = function() { throw new DOMException(ERR.INVALID_N
 exports.DataCloneError = function() { throw new DOMException(ERR.DATA_CLONE_ERR); };
 
 exports.nyi = function(what) {
-  throw new Error("NotYetImplemented " + what);
+  //throw new Error("NotYetImplemented " + what);
+	'nyi';
 };
 
 exports.shouldOverride = function() {

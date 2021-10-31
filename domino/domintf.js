@@ -2,7 +2,7 @@ global = {};
 //global.__domino_frozen__ = true; // Must precede any require('domino')
 var domino = require('domino-lib/index');
 
-Object.assign(this, domino.createWindow(opossum.html, 'http://example.com'));
+Object.assign(this, domino.createWindow(opossum.html, opossum.origin));
 window = this;
 window.self = window;
 window.parent = window;
@@ -10,7 +10,7 @@ window.top = window;
 window.history = {
 	replaceState: function() {}
 };
-window.location.href = 'http://example.com';
+window.location.href = opossum.origin;
 window.screen = {
 	width: 1280,
 	height: 1024
@@ -28,6 +28,8 @@ window.getComputedStyle = function(el, pseudo) {
 	var utils = require('domino-lib/utils');
 	utils.merge(window, domino.impl);
 })()
+
+btoa = opossum.btoa;
 
 location = window.location;
 navigator = {
@@ -53,6 +55,8 @@ document._setMutationHandler(function(a) {
 });
 
 ___opossumSubmit = function(a, b, c) {
+	if (this.onsubmit) this.onsubmit()
+	console.log('submit()');
 	if (this.tagName === 'BUTTON' || this.tagName === 'INPUT') {
 		let p;
 		for (p = el; p = p.parentElement; p != null) {
@@ -62,6 +66,24 @@ ___opossumSubmit = function(a, b, c) {
 			}
 		}
 	}
+}
+
+getMethods = (obj) => {
+  let properties = new Set()
+  let currentObj = obj
+  do {
+    Object.getOwnPropertyNames(currentObj).map(item => properties.add(item))
+  } while ((currentObj = Object.getPrototypeOf(currentObj)))
+  return [...properties.keys()].filter(item => typeof obj[item] === 'function')
+}
+
+getProperties = (obj) => {
+  let properties = new Set()
+  let currentObj = obj
+  do {
+    Object.getOwnPropertyNames(currentObj).map(item => properties.add(item))
+  } while ((currentObj = Object.getPrototypeOf(currentObj)))
+  return [...properties.keys()].filter(item => typeof obj[item] !== 'function')
 }
 
 addEventListener = function() {};
@@ -104,6 +126,83 @@ function XMLHttpRequest() {
 	this.getAllResponseHeaders = function() {
 		return '';
 	};
+}
+
+//
+// Fetch API
+//
+
+function Headers(hs) {
+	let h = {};
+
+	this.append = function(k, v) {
+		h[k] = v;
+	}
+	this.set = function(k, v) {
+		h[k] = v;
+	}
+	this.has = function(k) {
+		return !!h[k];
+	}
+	this.get = function(k) {
+		return h[k];
+	}
+	this.keys = function() {
+		return Object.keys(h);
+	}
+}
+
+function Request(url, opts) {
+	this.url = url;
+	if (opts) {
+		for (var k in opts) {
+			this[k] = opts[k];
+		}
+	}
+}
+
+function Response(body) {
+  let data = body;
+
+  this.body = function() {
+    return data;
+  }
+  this.json = function() {
+    return JSON.parse(data);
+  }
+  this.text = function() {
+    return data;
+  }
+}
+
+function fetch(resource, init) {
+  let url;
+  let opts;
+  let hs = {};
+  if (typeof resource === 'string') {
+    url = resource;
+    opts = init || {};
+  } else {
+  	url = resource.url;
+  	opts = resource.opts || {};
+  	if (resource.headers) {
+  		for (var k in resource.headers.keys()) {
+  			hs[k] = resource.headers.get(k);
+  		}
+  	}
+  }
+  let body = opts['body'] || '';
+  let method = opts['method'] || 'GET';
+	return new Promise(function(resolve, reject) {
+		let cb = function(data, err) {
+			if (err) {
+				reject(err);
+			} else {
+				resolve(new Response(data));
+			}
+		};
+		opossum.xhr(method, url, hs, body, cb);
+	});
 }
 
 var ___path;
@@ -204,6 +303,7 @@ function LocalStorage() {
         };
 }
 window.localStorage = new LocalStorage();
+window.sessionStorage = new LocalStorage();
 
 const imageHandler = {
   construct(target, args) {

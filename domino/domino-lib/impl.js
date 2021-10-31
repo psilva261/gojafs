@@ -12,6 +12,7 @@ exports = module.exports = {
   DocumentFragment: require('./DocumentFragment'),
   DocumentType: require('./DocumentType'),
   Element: require('./Element'),
+  EventTarget: require('./EventTarget'),
   HTMLParser: require('./HTMLParser'),
   NamedNodeMap: require('./NamedNodeMap'),
   Node: require('./Node'),

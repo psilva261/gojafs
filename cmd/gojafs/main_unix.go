@@ -44,7 +44,6 @@ func Init() (err error) {
 		return
 	}
 	htm = string(bs)
-	log.Printf("htm: %v", htm)
 	log.Printf("open js...")
 	dfid, err := fsys.Open("js", plan9.OREAD)
 	if err != nil {
